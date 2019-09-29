@@ -6,7 +6,8 @@ import numpy as np
 import Trie
 import pickle
 from copy import copy
-#import cProfile
+from scipy.stats import binom
+import cProfile
 
 ## dtype
 dtype = np.uint8
@@ -16,6 +17,7 @@ def readargs():
     group = parser.add_mutually_exclusive_group()
     group.add_argument('--naive',action='store_true')
     group.add_argument('--trie',action='store_true')
+    parser.add_argument('--heuristic',action='store_true')
     parser.add_argument('--ntypes', type=int, default=100)
     parser.add_argument('--nseqs', type=int,default=200000)
     parser.add_argument('--schemalength', type=int, default=3500)
@@ -68,21 +70,74 @@ def compare(s,query,maxdist):
                 return
     return s
 
+def compare_heuristic(s,query,maxdist,softrange):
+    d = 0
+    i=0
+    p=0
+    checkpoint,low,high = softrange[p]
+    p+=1
+    for a,b in zip(s,query):
+        i+=1
+        if a!=b:
+            d += 1
+            if d>maxdist:
+                return
+        if i%checkpoint == 0:
+            if d < low:
+                return s
+            elif d > high:
+                #print(i)
+                return
+            if len(softrange)>p:
+                checkpoint,low,high = softrange[p]
+                p+=1
+    return s
+
+def search_seqs_heuristic(seqs,query,maxdist):
+    ## Heuristic search
+    softrange = []
+    for i in [10,100,1000,2000]:
+        b = binom(i,maxdist/len(query))
+        softrange.append((i,b.ppf([0.0001]),b.ppf([0.9999])))
+    hits=list()
+    for k,s in seqs:
+        result = compare_heuristic(np.array(s),query,maxdist,softrange)
+        if result is not None:
+            hits.append(result)
+    return hits
+
 def index_trie(seqs,indexpath):
     if os.path.exists(indexpath) and not args.create_index and not args.create_seqs:
         index = pickle.load(open(indexpath,'rb'))
     else:
-        index = Trie.Tries(10,range(len(seqs)),200,seqs)
+        index = Trie.Tries(7,range(len(seqs)),100,seqs)
         pickle.dump(index,open(indexpath,'wb'))
     assert(len(seqs)==len(index))
     return index
+
+def search_trie_heuristic(index,seqs,query,maxdist):
+    idx = index.search(query)
+    print(len(idx))
+    softrange = []
+    alpha = 0.01
+    for i in [10,100,1000,2000]:
+        b = binom(i,maxdist/len(query))
+        softrange.append((i,b.ppf([alpha]),b.ppf([1-alpha])))
+    print(softrange)
+    
+    hits=list()
+    for i in idx:
+        result = compare_heuristic(np.array(seqs[i]),query,maxdist,softrange)
+        if result is not None:
+            hits.append(result)
+    return hits
 
 def search_trie(index,seqs,query,maxdist):
     idx = index.search(query)
     print(len(idx))
     hits=list()
     for i in idx:
-        result = compare(seqs[i],query,maxdist)
+        result = compare(np.array(seqs[i]),query,maxdist)
         if result is not None:
             hits.append(result)
     return hits
@@ -106,14 +161,20 @@ if __name__=="__main__":
         mm = np.memmap(args.seqs,dtype=dtype,mode='w+',shape=(args.nseqs,args.schemalength))
         mm[:] = seqs[:]
     #s = seqs[np.random.choice(args.nseqs)]
-    s = seqs[10]
+    s = np.array(seqs[10])
     hits=[]
     if args.naive:
         #cProfile.run("search_seqs(seqs,s,args.distance)")
-        hits = search_seqs(seqs,s,args.distance)
+        if args.heuristic:
+            hits = search_heuristic(seqs,s,args.distance)
+        else:
+            hits = search_seqs(seqs,s,args.distance)
     elif args.trie:
         index = index_trie(seqs,args.index)
         #cProfile.run("search_trie(index,seqs,s,args.distance)")
-        hits = search_trie(index,seqs,s,args.distance)
+        if args.heuristic:
+            hits = search_trie_heuristic(index,seqs,s,args.distance)
+        else:
+            hits = search_trie(index,seqs,s,args.distance)
     print(len(hits))
 
